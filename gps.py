@@ -59,7 +59,7 @@ class SIM7080G:
 
     def get_gps_position(self):
         while True:
-            logger.info("Requesting GNSS information...")
+            logger.info("Requesting GPS information...")
             gps_return = self.send_at_str("AT+CGNSINF", expected_reply_regex=".*\+CGNSINF:.*", regex_return_filter="^\+CGNSINF.*")
 
             if gps_return:
@@ -130,8 +130,13 @@ class SIM7080G:
 
 
 def main():
-    # logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
-    logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=logging.INFO,
+        #level=logging.DEBUG,
+        format='%(asctime)s - %(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
 
     modem = SIM7080G()
 

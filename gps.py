@@ -6,7 +6,6 @@ import logging
 import json
 import re
 import sys
-import argparse
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -75,7 +74,15 @@ class SIM7080G:
                 time.sleep(2)
 
     def parse_gps_info(self, gps_data):
-        gnss_keys = {
+        """
+        The GPS sends us back a bunch of values seperated with ",".
+        We got the key names from the docs and the type they're supposed to be.
+        This function associates the values with the correct key name and also
+        casts the values to the correct type
+        """
+
+        # names and types from docs
+        gnss_key_names_and_expected_types = {
             "gnss_run_state": int,
             "gps_fix_status": int,
             "utc_date_time": str,
@@ -95,14 +102,19 @@ class SIM7080G:
             "hpa": float,
             "vpa": float
         }
-        values = gps_data.split(": ")[1].split(',')
 
-        gps_json = dict(zip(gnss_keys.keys(), values))
-        for k, v in gps_json.items():
-            if v:
-                item_type = gnss_keys[k]
-                logging.debug(f"Trying to cast {k} value of \"{v}\" to type {item_type}...")
-                gps_json[k] = item_type(v)
+        # strip '\r' from end, then split into list
+        values_from_modem = gps_data[0:-1].split(": ")[1].split(',')
+
+        # merge the values from the gps with the key names
+        gps_json = dict(zip(gnss_key_names_and_expected_types.keys(), values_from_modem))
+
+        # cast values to correct type
+        for gnss_key_name, item_value in gps_json.items():
+            if item_value:
+                expected_item_type = gnss_key_names_and_expected_types[gnss_key_name]
+                logging.debug(f"Trying to cast {gnss_key_name} field's value of \"{item_value}\" to type {expected_item_type}...")
+                gps_json[gnss_key_name] = expected_item_type(item_value)
 
         print(json.dumps(gps_json, indent=3))
 
@@ -116,8 +128,8 @@ class SIM7080G:
 
 
 def main():
-    logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
-    # logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+    # logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+    logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 
     modem = SIM7080G()
 

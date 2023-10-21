@@ -17,8 +17,8 @@ class SIM7080G:
         self.ser.reset_input_buffer()
         self.ser.reset_output_buffer()
 
-    def send_at_str(self, command, expected_reply="OK", regex_return_filter=".*"):
-        logger.info(f"Sending data to serial interface: \"{command}\"")
+    def send_at_str(self, command, expected_reply_regex="^OK$", regex_return_filter=".*"):
+        logger.debug(f"Sending data to serial interface: \"{command}\"")
         self.ser.write((command + "\r\n").encode("utf-8"))
         time.sleep(1)
 
@@ -27,15 +27,13 @@ class SIM7080G:
             logger.info("Waiting for serial data response. Will re-check in 1 second...")
             time.sleep(1)
 
-        logger.info(f"Found {self.ser.in_waiting} bytes waiting on serial input")
-        response_data = self.ser.read(self.ser.in_waiting).decode().rstrip('\r')
+        logger.debug(f"Found {self.ser.in_waiting} bytes waiting on serial output")
+        response_data = self.ser.read(self.ser.in_waiting).decode().replace('\r', '')
 
         logger.debug(f"AT command response data (before regex filter):\n---- BEGIN ----\n{response_data}\n---- END ----")
 
-        # TODO: Instead of checking to see if expected_reply is inside of response_data,
-        # accept a regex to validate the response
-        if expected_reply in response_data:
-            logger.info(f"Response contains the expected reply string of \"{expected_reply}\". Returning data filtered with regex \"{regex_return_filter}\"")
+        if re.search(expected_reply_regex, response_data, re.MULTILINE):
+            logger.debug(f"Response matches expected reply regex of \"{expected_reply_regex}\". Returning data filtered with regex \"{regex_return_filter}\"")
 
             regex_filtered_response = "".join(re.findall(regex_return_filter, response_data, re.MULTILINE))
             logger.debug(f"AT command response data (after regex filter):\n---- BEGIN ----\n{regex_filtered_response}\n---- END ----")
@@ -62,16 +60,20 @@ class SIM7080G:
     def get_gps_position(self):
         while True:
             logger.info("Requesting GNSS information...")
-            gps_return = self.send_at_str("AT+CGNSINF", expected_reply="+CGNSINF:", regex_return_filter="^\+CGNSINF.*")
+            gps_return = self.send_at_str("AT+CGNSINF", expected_reply_regex=".*\+CGNSINF:.*", regex_return_filter="^\+CGNSINF.*")
 
-            if gps_return and ",,,," not in gps_return:
-                logger.info(f"Got a valid GPS location: {gps_return}")
-                logger.info("Sending GPS response to parser...")
-                self.parse_gps_info(gps_return)
-                break
+            if gps_return:
+                if ",,,," in gps_return:
+                    logger.info("Waiting for GPS lock. Retrying in 10 seconds...")
+                else:
+                    logger.info(f"Got a valid GPS location. Parsing...")
+                    logger.debug(f"Sending GPS response to parser: {gps_return}")
+                    self.parse_gps_info(gps_return)
+                    break
             else:
-                logger.info("Invalid or incomplete GPS location received. Retrying in 2 seconds...")
-                time.sleep(2)
+                logger.warning("Invalid reply from the GPS. Retrying in 10 seconds...")
+
+            time.sleep(10)
 
     def parse_gps_info(self, gps_data):
         """
@@ -103,8 +105,7 @@ class SIM7080G:
             "vpa": float
         }
 
-        # strip '\r' from end, then split into list
-        values_from_modem = gps_data[0:-1].split(": ")[1].split(',')
+        values_from_modem = gps_data.split(": ")[1].split(',')
 
         # merge the values from the gps with the key names
         gps_json = dict(zip(gnss_key_names_and_expected_types.keys(), values_from_modem))
@@ -117,6 +118,7 @@ class SIM7080G:
                 gps_json[gnss_key_name] = expected_item_type(item_value)
 
         print(json.dumps(gps_json, indent=3))
+        print(f"https://www.google.com/maps/search/?api=1&query={gps_json['latitude']},{gps_json['longitude']}")
 
     def test_modem(self):
         logging.info("Checking if SIM7080X is ready...")

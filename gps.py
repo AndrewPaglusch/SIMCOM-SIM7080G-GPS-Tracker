@@ -62,8 +62,15 @@ class SIM7080G:
     def _clean_serial_response(self, input_data, line_to_remove):
         return re.sub(f"^{re.escape(line_to_remove)}$", "", input_data, flags=re.MULTILINE)
 
-    def _send_at_command(self, *, command, expected_reply_regex="^OK$", failure_reply_regex="^ERROR.*", regex_return_filter=".*"):
+    def _send_at_command(self, *,
+                         command,
+                         expected_reply_regex="^OK$",
+                         failure_reply_regex="^ERROR.*",
+                         regex_return_filter=".*",
+                         response_read_delay_sec=0):
         self._write_serial_data(command)
+
+        time.sleep(response_read_delay_sec)
 
         response_data = self._read_serial_data()
         response_data = self._clean_serial_response(response_data, command)
@@ -115,8 +122,7 @@ class SIM7080G:
                 else:
                     logger.info("Got a valid GPS location. Parsing...")
                     logger.debug(f"Sending GPS response to parser: {response}")
-                    self._parse_gps_info(response)
-                    break
+                    return self._parse_gps_info(response)
             except SIM7080GException as e:
                 logger.warning(f"Failed reading from GPS. Retrying in 10 seconds. Error: {e}")
 
@@ -154,7 +160,7 @@ class SIM7080G:
                 logging.debug(f"Trying to cast {gnss_key_name} field's value of \"{item_value}\" to type {expected_item_type}...")
                 gps_json[gnss_key_name] = expected_item_type(item_value)
 
-        return gps_json
+        return json.dumps(gps_json)
 
     def _is_network_up(self):
         logger.debug("Checking to see if network is up...")
@@ -196,28 +202,60 @@ class SIM7080G:
 
     def post_json_payload(self, url, json_string):
 
-        logger.info("Preparing modem of HTTPS JSON POST...")
+        logger.info("Preparing modem for JSON POST over HTTPS...")
         ok_regex = '^OK$'
+        json_length = len(json_string)
         commands = (
+            ('AT+SHDISC', '.*', 'Cleaning up any old (failed) connections. ERRORs ignored'),
             ('AT+CSSLCFG="sslversion",1,3', ok_regex, 'Setting TLS version'),
             ('AT+CSSLCFG="ignorertctime",1,1', ok_regex, 'Disabling TLS cert expiration checking'),
-            ('AT+SHSSL=1,""', ok_regex, 'Relaxing TLS verification'),
             ('AT+CSSLCFG="sni",1,"paglusch.com"', ok_regex, 'Enabling SNI'),
+            ('AT+SHSSL=1,""', ok_regex, 'Relaxing TLS verification'),
             (f'AT+SHCONF="URL","{url}"', ok_regex, f'Setting URL to {url}'),
             ('AT+SHCONF="BODYLEN",1024', ok_regex, 'Setting max body size to 1024'),
-            ('AT+SHCONF="HEADERLEN",350', ok_regex, 'Setting max header size to 350')
-
+            ('AT+SHCONF="HEADERLEN",350', ok_regex, 'Setting max header size to 350'),
+            ('AT+SHCONN', ok_regex, 'Creating HTTPS connection (5 second delay)'),
+            ('AT+SHSTATE?', '^\+SHSTATE: 1$', 'Verifying connection is alive'),
+            ('AT+SHCHEAD', ok_regex, 'Clearing existing headers'),
+            ('AT+SHAHEAD="Content-Type","application/json"', ok_regex, 'Adding Content-Type header'),
+            (f'AT+SHBOD={json_length},10000', "^>", 'Preparing modem for JSON payload input')
         )
         for command, expected_reply_regex, status_msg in commands:
-            logger.info(f"POST : {status_msg}...")
+            logger.debug(f"(POST) {status_msg}...")
             try:
+                # add a 5 second sleep after this command before reading reply since the
+                # connection can take a while to establish
+                response_read_delay_sec = 5 if command == 'AT+SHCONN' else 0
+
                 self._send_at_command(command=command,
-                                      expected_reply_regex=expected_reply_regex)
+                                      expected_reply_regex=expected_reply_regex,
+                                      response_read_delay_sec=response_read_delay_sec)
             except SIM7080GException as e:
                 logger.error(f"Failed during JSON POST on command \"{command}\" ({status_msg}). Error: {e}")
                 return
 
-        print("Done with post")
+        # POST the data
+        try:
+            logger.debug("(POST) Sending JSON payload to modem...")
+            self._send_at_command(command=json_string + '\n', regex_return_filter='^\+SHREQ.+')
+
+            logger.debug("(POST) POSTing data...")
+            post_result = self._send_at_command(command='AT+SHREQ="/post-9a80sd.php",3')
+            post_resp_size = post_result.split(',')[-1]
+
+            # read http response
+            # TODO actually verify the HTTP reply once this POST is going somewhere useful
+            logger.debug("(POST) Reading HTTP reply...")
+            http_reply = self._send_at_command(command=f'AT+SHREAD=0,{post_resp_size}')
+
+            # cleanup
+            logger.debug("(POST) Closing connection...")
+            self._send_at_command(command='AT+SHDISC')
+
+            logger.info("POST succeeded!")
+        except SIM7080GException as e:
+            logger.error(f"Failed POSTing data to modem. Error: {e}")
+            return
 
 
 def main():
@@ -236,7 +274,8 @@ def main():
         sim7080g.gps_power_off()
 
         if sim7080g.activate_network():
-            sim7080g.post_json_payload('https://paglusch.com/', gps_json)
+            # URL must NOT end in a '/'
+            sim7080g.post_json_payload('https://paglusch.com', gps_json)
             sim7080g.deactivate_network()
     finally:
         sim7080g.serial_port.close()

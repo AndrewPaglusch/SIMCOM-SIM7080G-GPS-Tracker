@@ -10,12 +10,12 @@ When the script is executed, it goes through the following steps:
 
 1. Turns on the GPS modem.
 2. Waits for a stable GPS lock and gathers the coordinates.
-3. Powers down the GPS modem to conserve energy.
+3. Powers down the GPS modem.
 4. Parses the GPS data into a JSON format with appropriately assigned keys.
 5. Activates the cellular connection.
 6. Prepares the modem for an HTTPS POST request.
 7. Sends the GPS data JSON object to a specified web server.
-8. Shuts down the cellular connection to conserve the modem's battery life.
+8. Shuts down the cellular connection.
 
 ## Current Assumptions
 

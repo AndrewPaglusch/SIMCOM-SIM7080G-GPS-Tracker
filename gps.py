@@ -45,13 +45,11 @@ class SIM7080G:
             return ""
 
         logger.debug(f"Found {self.serial_port.in_waiting} bytes waiting on serial output")
-
         response_data = self.serial_port.read(self.serial_port.in_waiting).decode()
-        logger.debug(f"AT command response data (untouched):\n---- BEGIN ----\n{response_data}\n---- END ----")
+        self._log_raw_serial_data(message="AT command response data (untouched)",
+                                  serial_data=response_data)
 
-        response_data = response_data.replace("\r", "")  # Remove \r characters, keep \n characters
-
-        return response_data
+        return response_data.replace("\r", "")  # Remove \r characters, keep \n characters
 
     def _clean_serial_response(self, input_data, line_to_remove):
         return re.sub(f"^{re.escape(line_to_remove)}$", "", input_data, flags=re.MULTILINE)

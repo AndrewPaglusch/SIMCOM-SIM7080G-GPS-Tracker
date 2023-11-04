@@ -246,7 +246,7 @@ class SIM7080G:
             self._send_at_command(command=json_string + '\n', regex_return_filter='^\+SHREQ.+')
 
             logger.debug("(POST) POSTing data...")
-            post_result = self._send_at_command(command='AT+SHREQ="/post-9a80sd.php",3')
+            post_result = self._send_at_command(command='AT+SHREQ="/post-echo.php",3')
             post_resp_size = post_result.split(',')[-1]
 
             # read http response

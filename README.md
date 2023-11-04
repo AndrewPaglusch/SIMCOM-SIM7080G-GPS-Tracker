@@ -1,4 +1,4 @@
-# GPS Tracker Python Script for SIMCOM SIM7080G Modem
+# GPS Tracker for SIMCOM SIM7080G Modem
 
 ## Introduction
 

@@ -29,7 +29,7 @@ class SIM7080G:
         try:
             logger.debug(f"Sending data to serial interface: \"{data_str}\"")
             self.serial_port.write((data_str + "\r\n").encode("utf-8"))
-            time.sleep(1)  # give time for data to be sent
+            time.sleep(.5)  # give time for data to be sent
         except serial.SerialTimeoutException:
             raise SIM7080GException("Write timeout occurred while sending data to serial interface.")
         except serial.SerialException as serial_exception:
@@ -38,62 +38,73 @@ class SIM7080G:
             raise SIM7080GException(f"An unexpected error occurred: {general_exception}")
 
     def _read_serial_data(self):
-        read_retry_limit = 3
+        logger.debug("Attempting read from serial interface...")
 
-        for read_attempt in range(read_retry_limit):
-            logger.debug(f"Starting read attempt {read_attempt + 1} of {read_retry_limit}...")
+        if not self.serial_port.in_waiting:
+            logger.debug("No data waiting on serial port. Returning empty string")
+            return ""
 
-            if not self.serial_port.in_waiting:
-                logger.warning("No response data waiting. Will try reading again in 3 seconds...")
-                time.sleep(3)
-                continue
+        logger.debug(f"Found {self.serial_port.in_waiting} bytes waiting on serial output")
 
-            logger.debug(f"Found {self.serial_port.in_waiting} bytes waiting on serial output")
+        response_data = self.serial_port.read(self.serial_port.in_waiting).decode()
+        logger.debug(f"AT command response data (untouched):\n---- BEGIN ----\n{response_data}\n---- END ----")
 
-            response_data = self.serial_port.read(self.serial_port.in_waiting).decode()
-            logger.debug(f"AT command response data (untouched):\n---- BEGIN ----\n{response_data}\n---- END ----")
+        response_data = response_data.replace("\r", "")  # Remove \r characters, keep \n characters
 
-            response_data = response_data.replace("\r", "")  # Remove \r characters, keep \n characters
-
-            return response_data
-
-        raise SIM7080GException("Unable to read any data from serial device.")
+        return response_data
 
     def _clean_serial_response(self, input_data, line_to_remove):
         return re.sub(f"^{re.escape(line_to_remove)}$", "", input_data, flags=re.MULTILINE)
+
+    def _filter_serial_response_with_regex(self, *, regex, serial_data):
+        return "".join(re.findall(regex, serial_data, re.MULTILINE))
+
+    def _log_raw_serial_data(self, *, message, serial_data):
+        logger.debug(f"{message}\n---- BEGIN ----\n{serial_data}\n---- END ----")
 
     def _send_at_command(self, *,
                          command,
                          expected_reply_regex="^OK$",
                          failure_reply_regex="^ERROR.*",
-                         regex_return_filter=".*",
-                         response_read_delay_sec=0):
+                         regex_return_filter=".*"):
+
+        # How many read and regex attempts should be made against
+        # the modem after sending the AT command before giving up
+        attempts = 5
+
+        # send AT command to modem
         self._write_serial_data(command)
 
-        time.sleep(response_read_delay_sec)
+        for attempt in range(1, attempts + 1):
+            logger.debug(f"Parsing response data. Attempt {attempt} of {attempts}...")
 
-        response_data = self._read_serial_data()
-        response_data = self._clean_serial_response(response_data, command)
+            response_data = self._read_serial_data()
+            response_data = self._clean_serial_response(response_data, command)
 
-        logger.debug(f"AT command response data (after initial cleanup):\n---- BEGIN ----\n{response_data}\n---- END ----")
+            success_match = re.search(expected_reply_regex, response_data, re.MULTILINE)
+            failure_match = re.search(failure_reply_regex, response_data, re.MULTILINE)
 
-        if re.search(expected_reply_regex, response_data, re.MULTILINE):
-            logger.debug(f"Response matches expected reply regex: \"{expected_reply_regex}\". Returning data filtered with regex: \"{regex_return_filter}\".")
+            if success_match:
+                logger.debug(f"Response matches expected reply regex: \"{expected_reply_regex}\". Returning data filtered with regex: \"{regex_return_filter}\".")
 
-            filtered_response = "".join(re.findall(regex_return_filter, response_data, re.MULTILINE))
-            logger.debug(f"AT command response data (after regex filter):\n---- BEGIN ----\n{filtered_response}\n---- END ----")
+                filtered_response = self._filter_serial_response_with_regex(regex=regex_return_filter, serial_data=response_data)
+                self._log_raw_serial_data(message="AT command response data (after regex filter)",
+                                          serial_data=filtered_response)
 
-            return filtered_response
+                return filtered_response
 
-        if re.search(failure_reply_regex, response_data, re.MULTILINE):
-            logger.debug(f"Response matches failure reply regex: \"{failure_reply_regex}\". Returning data filtered with failure regex.")
+            if failure_match:
+                logger.debug(f"Response matches failure reply regex: \"{failure_reply_regex}\". Returning data filtered with failure regex.")
 
-            filtered_response = "".join(re.findall(failure_reply_regex, response_data, re.MULTILINE))
-            logger.debug(f"AT command failure response data (after regex filter):\n---- BEGIN ----\n{filtered_response}\n---- END ----")
+                filtered_response = self._filter_serial_response_with_regex(regex=failure_reply_regex, serial_data=response_data)
+                self._log_raw_serial_data(message="AT command failure response data (after regex filter)",
+                                          serial_data=filtered_response)
 
-            raise SIM7080GException(filtered_response)
+                raise SIM7080GException(filtered_response)
 
-        logger.error(f"Response data does not match success or failure regex.")
+            time.sleep(2)
+
+        logger.error(f"Response did not match success or failure regex after {attempts} attempts.")
         raise SIM7080GException("Response data does not match success or failure regex.")
 
     def gps_power_on(self):
@@ -214,7 +225,7 @@ class SIM7080G:
             (f'AT+SHCONF="URL","{url}"', ok_regex, f'Setting URL to {url}'),
             ('AT+SHCONF="BODYLEN",1024', ok_regex, 'Setting max body size to 1024'),
             ('AT+SHCONF="HEADERLEN",350', ok_regex, 'Setting max header size to 350'),
-            ('AT+SHCONN', ok_regex, 'Creating HTTPS connection (5 second delay)'),
+            ('AT+SHCONN', ok_regex, 'Creating HTTPS connection'),
             ('AT+SHSTATE?', '^\+SHSTATE: 1$', 'Verifying connection is alive'),
             ('AT+SHCHEAD', ok_regex, 'Clearing existing headers'),
             ('AT+SHAHEAD="Content-Type","application/json"', ok_regex, 'Adding Content-Type header'),
@@ -223,13 +234,8 @@ class SIM7080G:
         for command, expected_reply_regex, status_msg in commands:
             logger.debug(f"(POST) {status_msg}...")
             try:
-                # add a 5 second sleep after this command before reading reply since the
-                # connection can take a while to establish
-                response_read_delay_sec = 5 if command == 'AT+SHCONN' else 0
-
                 self._send_at_command(command=command,
-                                      expected_reply_regex=expected_reply_regex,
-                                      response_read_delay_sec=response_read_delay_sec)
+                                      expected_reply_regex=expected_reply_regex)
             except SIM7080GException as e:
                 logger.error(f"Failed during JSON POST on command \"{command}\" ({status_msg}). Error: {e}")
                 return
